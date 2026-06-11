@@ -61,12 +61,12 @@ if uploaded_file is not None:
             st.error("❌ 錯誤：所選欄位轉為數字並清洗空值後，已無可用數據。請檢查欄位內是否包含非數字文字。")
             st.stop()
 
-        # 3. 提取濃度與重複實驗數據
+      # 3. 提取濃度與重複實驗數據
         raw_concentrations = df_clean[concentration_col].values
         raw_replicates = df_clean[replicate_cols].values
         replicate_count = len(replicate_cols)
 
-        # 尋找濃度為 0 的控制組
+        # 📌 這裡就是原本出錯的區塊，現在已經嚴格對齊 8 個空格
         control_idx = np.argmin(np.abs(raw_concentrations))
         control_conc_value = raw_concentrations[control_idx]
         control_group_mean = raw_replicates[control_idx].mean()
