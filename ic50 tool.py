@@ -7,7 +7,7 @@ import io
 
 # 設定網頁標題與排版
 st.set_page_config(page_title="Dose-Response IC50 Tool", layout="centered")
-st.title("📊 彈性欄位型 IC50 曲線擬合工具")
+st.title("📊 彈性欄位型 IC50 曲線擬合工具 (容錯加強版)")
 st.write("上傳 Excel 後，你可以自由指定哪一欄是濃度，以及哪幾欄是重複實驗數據。")
 
 # 1. 定義四參數邏輯斯模型 (4PL Model)
@@ -19,11 +19,15 @@ uploaded_file = st.file_uploader("📂 請選擇你的 Excel 檔案 (.xlsx)", ty
 
 if uploaded_file is not None:
     try:
-        # 讀取 Excel（保留第一列作為欄位名稱）
-        raw_df = pd.read_excel(uploaded_file)
+        # 讀取 Excel（強制將所有內容先當作字串讀入，避免格式錯亂）
+        raw_df = pd.read_excel(uploaded_file, dtype=str)
         
         # 移除全空行或全空列
         raw_df.dropna(how='all', inplace=True)
+        
+        # 💡 【自動清洗字串雜質】去除所有格子前後的隱形空白、換行符
+        for col in raw_df.columns:
+            raw_df[col] = raw_df[col].astype(str).str.strip()
         
         st.write("---")
         st.subheader("⚙️ 欄位設定")
@@ -46,22 +50,25 @@ if uploaded_file is not None:
             st.stop()
 
         # 【數據預覽區塊】
-        with st.expander("📄 點擊展開/收合：目前選定數據預覽 (顯示前 10 筆)"):
+        with st.expander("📄 點擊展開/收合：目前選定原始數據預覽 (顯示前 10 筆)"):
             preview_cols = [concentration_col] + replicate_cols
             st.dataframe(raw_df[preview_cols].head(10), use_container_width=True)
 
-        # 根據使用者的選擇，提取並清洗數據
+        # 根據使用者的選擇，提取數據
         selected_cols = [concentration_col] + replicate_cols
         df_clean = raw_df[selected_cols].copy()
         
-        # 強制轉換成數字，並剔除含有空值的橫列
-        df_clean = df_clean.apply(pd.to_numeric, errors='coerce').dropna()
+        # 💡 【核心修正】強制轉換成數字，無法轉換的（文字或符號）會變成 NaN
+        df_clean = df_clean.apply(pd.to_numeric, errors='coerce')
+        
+        # 剔除含有空值的橫列
+        df_clean.dropna(inplace=True)
 
         if df_clean.empty:
-            st.error("❌ 錯誤：所選欄位轉為數字並清洗空值後，已無可用數據。請檢查欄位內是否包含非數字文字。")
+            st.error("❌ 錯誤：所選欄位轉為數字並清洗空值後，已無可用數據。請確認你在 Excel 裡的數據除了標題之外，其餘格子是否為純數字。")
             st.stop()
 
-        # 3. 提取濃度與重複實驗數據（此處已徹底重新對齊）
+        # 3. 提取濃度與重複實驗數據
         raw_concentrations = df_clean[concentration_col].values
         raw_replicates = df_clean[replicate_cols].values
         replicate_count = len(replicate_cols)
