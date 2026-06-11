@@ -7,8 +7,8 @@ import io
 
 # 設定網頁標題與排版
 st.set_page_config(page_title="Dose-Response IC50 Tool", layout="centered")
-st.title("📊 彈性欄位型 IC50 曲線擬合工具 (容錯加強版)")
-st.write("上傳 Excel 後，你可以自由指定哪一欄是濃度，以及哪幾欄是重複實驗數據。")
+st.title("📊 智慧定位型 IC50 曲線擬合工具")
+st.write("本系統已優化：支援無標題欄位、任意欄位起點之 Excel 數據。")
 
 # 1. 定義四參數邏輯斯模型 (4PL Model)
 def log_4pl(x, min_response, max_response, ic50, hill_slope):
@@ -19,53 +19,63 @@ uploaded_file = st.file_uploader("📂 請選擇你的 Excel 檔案 (.xlsx)", ty
 
 if uploaded_file is not None:
     try:
-        # 讀取 Excel（強制將所有內容先當作字串讀入，避免格式錯亂）
-        raw_df = pd.read_excel(uploaded_file, dtype=str)
+        # 💡 【核心修正 1】讀取時「不」把第一列當標題，強制用數字 0, 1, 2... 作為欄位名
+        raw_df = pd.read_excel(uploaded_file, header=None)
         
-        # 移除全空行或全空列
+        # 將欄位名稱改成對應 Excel 的英文字母 A, B, C, D... 方便使用者辨識
+        import string
+        num_cols = raw_df.shape[1]
+        alphabet_cols = []
+        for i in range(num_cols):
+            # 支援超過 26 欄的情況
+            if i < 26:
+                alphabet_cols.append(string.ascii_uppercase[i])
+            else:
+                alphabet_cols.append(string.ascii_uppercase[i//26 - 1] + string.ascii_uppercase[i%26])
+        raw_df.columns = alphabet_cols
+
+        # 移除完全空白的橫列與直欄
         raw_df.dropna(how='all', inplace=True)
-        
-        # 💡 【自動清洗字串雜質】去除所有格子前後的隱形空白、換行符
-        for col in raw_df.columns:
-            raw_df[col] = raw_df[col].astype(str).str.strip()
-        
+        raw_df.dropna(how='all', axis=1, inplace=True)
+
         st.write("---")
         st.subheader("⚙️ 欄位設定")
         
-        # 讓使用者從 Excel 欄位中選擇
         all_columns = raw_df.columns.tolist()
         
         col_select1, col_select2 = st.columns(2)
         
         with col_select1:
-            concentration_col = st.selectbox("🎯 請選擇【濃度】欄位：", all_columns)
+            # 依據你的截圖，預設幫你找 D 欄，找不到就選第一個
+            default_x_idx = all_columns.index('D') if 'D' in all_columns else 0
+            concentration_col = st.selectbox("🎯 請選擇【濃度】所在的英文字母欄：", all_columns, index=default_x_idx)
             
         with col_select2:
-            # 排除掉已經選為濃度的欄位，當作重複組的預選參考
             remaining_cols = [c for c in all_columns if c != concentration_col]
-            replicate_cols = st.multiselect("🧪 請勾選【重複實驗數據】欄位（可多選）：", remaining_cols, default=remaining_cols[:3] if len(remaining_cols)>=3 else remaining_cols)
+            # 依據你的截圖，預設幫你勾選 E, F, G 欄
+            default_y = [c for c in ['E', 'F', 'G'] if c in remaining_cols]
+            replicate_cols = st.multiselect("🧪 請勾選【重複實驗數據】所在的欄位（可多選）：", remaining_cols, default=default_y if default_y else remaining_cols[:3])
 
         if not replicate_cols:
             st.warning("⚠️ 請至少勾選一個重複實驗數據欄位。")
             st.stop()
 
-        # 【數據預覽區塊】
-        with st.expander("📄 點擊展開/收合：目前選定原始數據預覽 (顯示前 10 筆)"):
-            preview_cols = [concentration_col] + replicate_cols
-            st.dataframe(raw_df[preview_cols].head(10), use_container_width=True)
-
         # 根據使用者的選擇，提取數據
         selected_cols = [concentration_col] + replicate_cols
         df_clean = raw_df[selected_cols].copy()
         
-        # 💡 【核心修正】強制轉換成數字，無法轉換的（文字或符號）會變成 NaN
+        # 強制轉換成數字，此時會自動把上方或下方的空白與文字轉成 NaN
         df_clean = df_clean.apply(pd.to_numeric, errors='coerce')
         
-        # 剔除含有空值的橫列
+        # 💡 【核心修正 2】剔除含有空值的橫列。這樣就會精準只留下 D, E, F, G 同時有數字的那 8 列！
         df_clean.dropna(inplace=True)
 
+        # 【數據預覽區塊】顯示成功去空值後的純數字
+        with st.expander("📄 點擊展開/收合：目前選定純數字數據預覽"):
+            st.dataframe(df_clean, use_container_width=True)
+
         if df_clean.empty:
-            st.error("❌ 錯誤：所選欄位轉為數字並清洗空值後，已無可用數據。請確認你在 Excel 裡的數據除了標題之外，其餘格子是否為純數字。")
+            st.error("❌ 錯誤：所選欄位轉為數字並清洗空值後，已無可用數據。請確認你勾選的欄位是否正確。")
             st.stop()
 
         # 3. 提取濃度與重複實驗數據
@@ -78,7 +88,7 @@ if uploaded_file is not None:
         control_conc_value = raw_concentrations[control_idx]
         control_group_mean = raw_replicates[control_idx].mean()
 
-        st.success(f"📊 欄位解析成功！控制組為【{concentration_col} = {control_conc_value}】，原始平均值：{control_group_mean:.2f} (n={replicate_count})")
+        st.success(f"📊 欄位解析成功！偵測到控制組為【欄位 {concentration_col} = {control_conc_value}】，原始平均值：{control_group_mean:.2f} (n={replicate_count})")
 
         # 進行歸一化
         normalized_replicates = (raw_replicates / control_group_mean) * 100
@@ -106,16 +116,16 @@ if uploaded_file is not None:
         col3.metric("Bottom (最低相對反應)", f"{fitted_min:.2f}%")
         
     except Exception as e:
-        st.error(f"❌ 數據處理或擬合失敗。錯誤訊息: {e}")
+        st.error(f"❌ 數據處理或擬合失敗。原因可能是數值未呈現 S 型趨勢。錯誤訊息: {e}")
         st.stop()
 
-    # 5. 繪圖與自動存檔
+    # 5. 繪圖
     fig, ax = plt.subplots(figsize=(8, 6))
 
-    # A. 數據點與 Error Bar (黑色外框、白色中心)
+    # A. 數據點與 Error Bar
     ax.errorbar(concentrations, mean_responses, yerr=std_errors, fmt='o', color='black', markeredgecolor='black', markerfacecolor='white', markersize=7, capsize=5, label=f'Normalized Data (Mean ± SD, n={replicate_count})')
 
-    # B. 個別原始數據點 (維持半透明淺灰色)
+    # B. 個別原始數據點
     for i in range(replicate_count):
         ax.scatter(concentrations, normalized_replicates[:, i], color='lightgray', alpha=0.5, s=20, zorder=2)
 
