@@ -92,7 +92,7 @@ if uploaded_file is not None:
 
             st.success(f"📊 數據提取成功！控制組為【欄位 {concentration_col} = {control_conc_value}】，原始平均值：{control_group_mean:.2f} (n={replicate_count})")
 
-            # 進行歸一化
+            # 進行歸一化（嚴格遵循百分比計算需求）
             normalized_replicates = (raw_replicates / control_group_mean) * 100
             mean_responses = normalized_replicates.mean(axis=1)
             std_errors = normalized_replicates.std(axis=1)
@@ -104,7 +104,9 @@ if uploaded_file is not None:
 
             # 4. 進行曲線擬合 (Curve Fitting)
             initial_guess = [min(mean_responses), max(mean_responses), np.median(concentrations), 1.0]
-            bounds = ([0, 0, concentrations.min()*0.1, 0.1], [50, 250, concentrations.max()*10, 5])
+            
+            # 💡 【唯一改動】將 Hill Slope 邊界上限從原本的 5 放寬至 30，其餘完全不變
+            bounds = ([0, 0, concentrations.min()*0.1, 0.1], [50, 250, concentrations.max()*10, 30.0])
 
             popt, pcov = curve_fit(log_4pl, concentrations, mean_responses, p0=initial_guess, bounds=bounds, sigma=std_errors)
             fitted_min, fitted_max, fitted_ic50, fitted_slope = popt
@@ -152,7 +154,7 @@ if uploaded_file is not None:
             # 秀出圖表在網頁上
             st.pyplot(fig)
 
-            # 💾 提供高解析度圖片下載按鈕 (已修正 ID 衝突問題)
+            # 💾 提供高解析度圖片下載按鈕
             img_buffer = io.BytesIO()
             plt.savefig(img_buffer, format='png', dpi=300)
             img_buffer.seek(0)
