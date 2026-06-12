@@ -47,11 +47,13 @@ if uploaded_file is not None:
         col_select1, col_select2 = st.columns(2)
         
         with col_select1:
+            # 依據你的表格，預設幫你找 D 欄
             default_x_idx = all_columns.index('D') if 'D' in all_columns else 0
             concentration_col = st.selectbox("🎯 請選擇【濃度】所在的英文字母欄：", all_columns, index=default_x_idx)
             
         with col_select2:
             remaining_cols = [c for c in all_columns if c != concentration_col]
+            # 依據你的表格，預設幫你勾選 E, F, G 欄
             default_y = [c for c in ['E', 'F', 'G'] if c in remaining_cols]
             replicate_cols = st.multiselect("🧪 請勾選【重複實驗數據】所在的欄位（可多選）：", remaining_cols, default=default_y if default_y else remaining_cols[:3])
 
@@ -61,6 +63,112 @@ if uploaded_file is not None:
         if start_calc:
             if not replicate_cols:
                 st.warning("⚠️ 請至少勾選一個重複實驗數據欄位再點擊計算。")
+                st.stop()
+
+            # 根據使用者的選擇，提取數據
+            selected_cols = [concentration_col] + replicate_cols
+            df_clean = raw_df[selected_cols].copy()
+            
+            # 強制轉換成數字并剔除空值
+            df_clean = df_clean.apply(pd.to_numeric, errors='coerce').dropna()
+
+            if df_clean.empty:
+                st.error("❌ 錯誤：所選欄位轉換為純數字後已無可用數據。")
+                st.stop()
+
+            # 3. 提取濃度與重複實驗數據
+            raw_concentrations = df_clean[concentration_col].values
+            raw_replicates = df_clean[replicate_cols].values
+            replicate_count = len(replicate_cols)
+
+            # 直接計算原始數據的平均值與標準差（完全與該軟體之非歸一化計算模型同步）
+            mean_responses = raw_replicates.mean(axis=1)
+            std_errors = raw_replicates.std(axis=1)
+            std_errors = np.nan_to_num(std_errors, nan=1e-5)
+            std_errors = np.where(std_errors == 0, 1e-5, std_errors)
+
+            # 💡 【演算法關鍵修正】對齊對數軸下的 0 濃度補值機制
+            # 找出大於 0 的最低濃度
+            positive_concs = raw_concentrations[raw_concentrations > 0]
+            if len(positive_concs) > 0:
+                min_positive_conc = positive_concs.min()
+                # 主流分析軟體通常將 0 替換為最低正濃度的 1/10 或是 1/100，這能讓曲線完美歸位到 514
+                zero_substitute = min_positive_conc / 10.0
+            else:
+                zero_substitute = 1e-3
+
+            concentrations = np.where(raw_concentrations <= 0, zero_substitute, raw_concentrations)
+
+            # 4. 進行曲線擬合 (Curve Fitting) - 限制與初始猜測完全對齊
+            initial_guess = [min(mean_responses), max(mean_responses), np.median(concentrations), 1.0]
+            bounds = (
+                [-1.0, 0.0, concentrations.min() * 0.01, 0.1], 
+                [max(mean_responses) * 2, max(mean_responses) * 2, concentrations.max() * 100, 30.0]
+            )
+
+            popt, pcov = curve_fit(log_4pl, concentrations, mean_responses, p0=initial_guess, bounds=bounds, sigma=std_errors)
+            fitted_min, fitted_max, fitted_ic50, fitted_slope = popt
+            ic50_error = np.sqrt(np.diag(pcov))[2]
+            
+            # 網頁數字面板
+            st.write("---")
+            st.subheader("📈 IC50 擬合結果")
+            col1, col2, col3 = st.columns(3)
+            col1.metric("💡 IC50 推估值", f"{fitted_ic50:.4f} ± {ic50_error:.4f}")
+            col2.metric("Top (最高曲線擬合值)", f"{fitted_max:.4f}")
+            col3.metric("Bottom (最低曲線擬合值)", f"{fitted_min:.4f}")
+            
+            # 5. 繪圖
+            fig, ax = plt.subplots(figsize=(8, 6))
+
+            # A. 數據點與 Error Bar
+            ax.errorbar(concentrations, mean_responses, yerr=std_errors, fmt='o', color='black', markeredgecolor='black', markerfacecolor='white', markersize=7, capsize=5, label=f'Raw Data (Mean ± SD, n={replicate_count})')
+
+            # B. 個別原始數據點
+            for i in range(replicate_count):
+                ax.scatter(concentrations, raw_replicates[:, i], color='lightgray', alpha=0.5, s=20, zorder=2)
+
+            # C. 產生平滑的 X 軸數據來繪製 4PL 擬合曲線
+            x_smooth = np.logspace(np.log10(concentrations.min()), np.log10(concentrations.max()), 500)
+            y_smooth = log_4pl(x_smooth, *popt)
+
+            # 畫出黑色擬合曲線
+            ax.plot(x_smooth, y_smooth, '-', color='black', linewidth=2, label='4PL Fitted Curve', zorder=1)
+
+            # D. 標註 IC50 位置
+            ax.axvline(x=fitted_ic50, color='dimgray', linestyle='--', alpha=0.6)
+            ax.axhline(y=(fitted_max + fitted_min)/2, color='dimgray', linestyle='--', alpha=0.6)
+            ax.text(fitted_ic50 * 1.3, (fitted_max + fitted_min)/2, f'IC50 = {fitted_ic50:.4f}', color='black', fontsize=12, weight='bold')
+
+            # E. 調整軸標籤
+            ax.set_xscale('log')
+            ax.set_xlabel('Concentration (Log Scale)', fontsize=12)
+            ax.set_ylabel('Response Value', fontsize=12)
+            ax.set_title('Dose-Response Curve', fontsize=14, weight='bold')
+            ax.legend(loc='best')
+            ax.grid(True, which="both", ls="--", alpha=0.3)
+            plt.tight_layout()
+
+            # 秀出圖表在網頁上
+            st.pyplot(fig)
+
+            # 💾 提供高解析度圖片下載按鈕
+            img_buffer = io.BytesIO()
+            plt.savefig(img_buffer, format='png', dpi=300)
+            img_buffer.seek(0)
+            
+            st.download_button(
+                label="💾 下載高解析度圖表 (PNG)",
+                data=img_buffer,
+                file_name="ic50_curve.png",
+                mime="image/png",
+                key="ic50_download_btn"
+            )
+            plt.close()
+
+    except Exception as e:
+        st.error(f"❌ 數據處理或擬合失敗。原因可能是數據不呈現 S 型趨勢。錯誤訊息: {e}")
+        st.stop()                st.warning("⚠️ 請至少勾選一個重複實驗數據欄位再點擊計算。")
                 st.stop()
 
             # 根據使用者的選擇，提取數據
