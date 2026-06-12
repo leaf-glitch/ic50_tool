@@ -67,7 +67,7 @@ if uploaded_file is not None:
             selected_cols = [concentration_col] + replicate_cols
             df_clean = raw_df[selected_cols].copy()
             
-            # 強制轉換成數字並剔除空值
+            # 強制轉換成數字并剔除空值
             df_clean = df_clean.apply(pd.to_numeric, errors='coerce').dropna()
 
             if df_clean.empty:
@@ -79,29 +79,20 @@ if uploaded_file is not None:
             raw_replicates = df_clean[replicate_cols].values
             replicate_count = len(replicate_cols)
 
-            # 尋找濃度為 0 的控制組並進行基準計算
-            control_idx = np.argmin(np.abs(raw_concentrations))
-            control_conc_value = raw_concentrations[control_idx]
-            control_group_mean = raw_replicates[control_idx].mean()
-
-            st.success(f"📊 數據提取成功！控制組為【欄位 {concentration_col} = {control_conc_value}】，原始平均值：{control_group_mean:.2f} (n={replicate_count})")
-
-            # 進行歸一化（除以控制組換算 %）
-            normalized_replicates = (raw_replicates / control_group_mean) * 100
-            mean_responses = normalized_replicates.mean(axis=1)
-            std_errors = normalized_replicates.std(axis=1)
+            # 計算原始數據的平均值與標準差（回歸與該軟體完全一致的原始數據回歸）
+            mean_responses = raw_replicates.mean(axis=1)
+            std_errors = raw_replicates.std(axis=1)
 
             # 對數修正與防錯
             concentrations = np.where(raw_concentrations <= 0, 1e-6, raw_concentrations)
             std_errors = np.nan_to_num(std_errors, nan=1e-5)
             std_errors = np.where(std_errors == 0, 1e-5, std_errors)
 
-            # 4. 進行曲線擬合 (Curve Fitting)
-            # 💡 【核心演算法對齊】放寬 Top (max_response) 上限至 300%，Hill Slope 上限至 30.0
+            # 4. 進行曲線擬合 (Curve Fitting) - 參數範圍完全對齊軟體原始值
             initial_guess = [min(mean_responses), max(mean_responses), np.median(concentrations), 1.0]
             bounds = (
-                [-50.0, 0.0, concentrations.min() * 0.1, 0.1], 
-                [100.0, 300.0, concentrations.max() * 10, 30.0]
+                [-1.0, 0.0, concentrations.min() * 0.1, 0.1], 
+                [max(mean_responses) * 2, max(mean_responses) * 2, concentrations.max() * 10, 30.0]
             )
 
             popt, pcov = curve_fit(log_4pl, concentrations, mean_responses, p0=initial_guess, bounds=bounds, sigma=std_errors)
@@ -113,18 +104,18 @@ if uploaded_file is not None:
             st.subheader("📈 IC50 擬合結果")
             col1, col2, col3 = st.columns(3)
             col1.metric("💡 IC50 推估值", f"{fitted_ic50:.4f} ± {ic50_error:.4f}")
-            col2.metric("Top (最高相對反應)", f"{fitted_max:.2f}%")
-            col3.metric("Bottom (最低相對反應)", f"{fitted_min:.2f}%")
+            col2.metric("Top (最高曲線擬合值)", f"{fitted_max:.4f}")
+            col3.metric("Bottom (最低曲線擬合值)", f"{fitted_min:.4f}")
             
             # 5. 繪圖
             fig, ax = plt.subplots(figsize=(8, 6))
 
             # A. 數據點與 Error Bar
-            ax.errorbar(concentrations, mean_responses, yerr=std_errors, fmt='o', color='black', markeredgecolor='black', markerfacecolor='white', markersize=7, capsize=5, label=f'Normalized Data (Mean ± SD, n={replicate_count})')
+            ax.errorbar(concentrations, mean_responses, yerr=std_errors, fmt='o', color='black', markeredgecolor='black', markerfacecolor='white', markersize=7, capsize=5, label=f'Raw Data (Mean ± SD, n={replicate_count})')
 
             # B. 個別原始數據點
             for i in range(replicate_count):
-                ax.scatter(concentrations, normalized_replicates[:, i], color='lightgray', alpha=0.5, s=20, zorder=2)
+                ax.scatter(concentrations, raw_replicates[:, i], color='lightgray', alpha=0.5, s=20, zorder=2)
 
             # C. 產生平滑的 X 軸數據來繪製 4PL 擬合曲線
             x_smooth = np.logspace(np.log10(concentrations.min()), np.log10(concentrations.max()), 500)
@@ -141,8 +132,8 @@ if uploaded_file is not None:
             # E. 調整軸標籤
             ax.set_xscale('log')
             ax.set_xlabel('Concentration (Log Scale)', fontsize=12)
-            ax.set_ylabel('Cell Viability (% of Control)', fontsize=12)
-            ax.set_title('Dose-Response Curve (Normalized to Control)', fontsize=14, weight='bold')
+            ax.set_ylabel('Response Value', fontsize=12)
+            ax.set_title('Dose-Response Curve', fontsize=14, weight='bold')
             ax.legend(loc='best')
             ax.grid(True, which="both", ls="--", alpha=0.3)
             plt.tight_layout()
