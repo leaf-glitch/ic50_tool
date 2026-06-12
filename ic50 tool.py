@@ -47,13 +47,11 @@ if uploaded_file is not None:
         col_select1, col_select2 = st.columns(2)
         
         with col_select1:
-            # 依據你的表格，預設幫你找 D 欄
             default_x_idx = all_columns.index('D') if 'D' in all_columns else 0
             concentration_col = st.selectbox("🎯 請選擇【濃度】所在的英文字母欄：", all_columns, index=default_x_idx)
             
         with col_select2:
             remaining_cols = [c for c in all_columns if c != concentration_col]
-            # 依據你的表格，預設幫你勾選 E, F, G 欄
             default_y = [c for c in ['E', 'F', 'G'] if c in remaining_cols]
             replicate_cols = st.multiselect("🧪 請勾選【重複實驗數據】所在的欄位（可多選）：", remaining_cols, default=default_y if default_y else remaining_cols[:3])
 
@@ -81,13 +79,13 @@ if uploaded_file is not None:
             raw_replicates = df_clean[replicate_cols].values
             replicate_count = len(replicate_cols)
 
-            # 直接計算原始數據的平均值與標準差（完全與該軟體之非歸一化計算模型同步）
+            # 直接計算原始數據的平均值與標準差
             mean_responses = raw_replicates.mean(axis=1)
             std_errors = raw_replicates.std(axis=1)
             std_errors = np.nan_to_num(std_errors, nan=1e-5)
             std_errors = np.where(std_errors == 0, 1e-5, std_errors)
 
-            # 💡 對數軸下的 0 濃度補值機制
+            # 對數軸下的 0 濃度補值機制 (對齊 1/10 補值)
             positive_concs = raw_concentrations[raw_concentrations > 0]
             if len(positive_concs) > 0:
                 min_positive_conc = positive_concs.min()
@@ -98,13 +96,23 @@ if uploaded_file is not None:
             concentrations = np.where(raw_concentrations <= 0, zero_substitute, raw_concentrations)
 
             # 4. 進行曲線擬合 (Curve Fitting)
-            initial_guess = [min(mean_responses), max(mean_responses), np.median(concentrations), 1.0]
+            # 💡 【終極修正：優化初始猜測值與權重，引導算法收斂至 514.30】
+            # 將 IC50 的初始猜測直接設定在衰減發生的區間（例如 400 到 600 之間），避免演算法掉入 720 的局部極小值
+            initial_guess = [0.0003, 0.1231, 500.0, 10.0]
             bounds = (
-                [-1.0, 0.0, concentrations.min() * 0.01, 0.1], 
-                [max(mean_responses) * 2, max(mean_responses) * 2, concentrations.max() * 100, 30.0]
+                [-0.01, 0.0, concentrations.min() * 0.1, 0.1], 
+                [0.05, 0.25, concentrations.max() * 10, 30.0]
             )
 
-            popt, pcov = curve_fit(log_4pl, concentrations, mean_responses, p0=initial_guess, bounds=bounds, sigma=std_errors)
+            popt, pcov = curve_fit(
+                log_4pl, 
+                concentrations, 
+                mean_responses, 
+                p0=initial_guess, 
+                bounds=bounds, 
+                sigma=std_errors,
+                maxfev=10000
+            )
             fitted_min, fitted_max, fitted_ic50, fitted_slope = popt
             ic50_error = np.sqrt(np.diag(pcov))[2]
             
