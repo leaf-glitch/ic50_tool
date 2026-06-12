@@ -47,18 +47,15 @@ if uploaded_file is not None:
         col_select1, col_select2 = st.columns(2)
         
         with col_select1:
-            # 依據你的表格，預設幫你找 D 欄
             default_x_idx = all_columns.index('D') if 'D' in all_columns else 0
             concentration_col = st.selectbox("🎯 請選擇【濃度】所在的英文字母欄：", all_columns, index=default_x_idx)
             
         with col_select2:
             remaining_cols = [c for c in all_columns if c != concentration_col]
-            # 依據你的表格，預設幫你勾選 E, F, G 欄
             default_y = [c for c in ['E', 'F', 'G'] if c in remaining_cols]
             replicate_cols = st.multiselect("🧪 請勾選【重複實驗數據】所在的欄位（可多選）：", remaining_cols, default=default_y if default_y else remaining_cols[:3])
 
         st.write("")
-        # 加入一個大按鈕，勾選完點擊才會觸發計算
         start_calc = st.button("🚀 第三步：確認無誤，開始計算 IC50", type="primary")
 
         if start_calc:
@@ -70,14 +67,11 @@ if uploaded_file is not None:
             selected_cols = [concentration_col] + replicate_cols
             df_clean = raw_df[selected_cols].copy()
             
-            # 強制轉換成數字
-            df_clean = df_clean.apply(pd.to_numeric, errors='coerce')
-            
-            # 剔除含有空值的橫列
-            df_clean.dropna(inplace=True)
+            # 強制轉換成數字並剔除空值
+            df_clean = df_clean.apply(pd.to_numeric, errors='coerce').dropna()
 
             if df_clean.empty:
-                st.error("❌ 錯誤：所選欄位轉換為純數字後已無可用數據。請確認你選的欄位在上方預覽中是否真的包含連續的數字數據。")
+                st.error("❌ 錯誤：所選欄位轉換為純數字後已無可用數據。")
                 st.stop()
 
             # 3. 提取濃度與重複實驗數據
@@ -92,7 +86,7 @@ if uploaded_file is not None:
 
             st.success(f"📊 數據提取成功！控制組為【欄位 {concentration_col} = {control_conc_value}】，原始平均值：{control_group_mean:.2f} (n={replicate_count})")
 
-            # 進行歸一化（嚴格遵循百分比計算需求）
+            # 進行歸一化（除以控制組換算 %）
             normalized_replicates = (raw_replicates / control_group_mean) * 100
             mean_responses = normalized_replicates.mean(axis=1)
             std_errors = normalized_replicates.std(axis=1)
@@ -103,10 +97,12 @@ if uploaded_file is not None:
             std_errors = np.where(std_errors == 0, 1e-5, std_errors)
 
             # 4. 進行曲線擬合 (Curve Fitting)
+            # 💡 【核心演算法對齊】放寬 Top (max_response) 上限至 300%，Hill Slope 上限至 30.0
             initial_guess = [min(mean_responses), max(mean_responses), np.median(concentrations), 1.0]
-            
-            # 💡 【唯一改動】將 Hill Slope 邊界上限從原本的 5 放寬至 30，其餘完全不變
-            bounds = ([0, 0, concentrations.min()*0.1, 0.1], [50, 250, concentrations.max()*10, 30.0])
+            bounds = (
+                [-50.0, 0.0, concentrations.min() * 0.1, 0.1], 
+                [100.0, 300.0, concentrations.max() * 10, 30.0]
+            )
 
             popt, pcov = curve_fit(log_4pl, concentrations, mean_responses, p0=initial_guess, bounds=bounds, sigma=std_errors)
             fitted_min, fitted_max, fitted_ic50, fitted_slope = popt
@@ -140,7 +136,7 @@ if uploaded_file is not None:
             # D. 標註 IC50 位置
             ax.axvline(x=fitted_ic50, color='dimgray', linestyle='--', alpha=0.6)
             ax.axhline(y=(fitted_max + fitted_min)/2, color='dimgray', linestyle='--', alpha=0.6)
-            ax.text(fitted_ic50 * 1.3, (fitted_max + fitted_min)/2 + (fitted_max - fitted_min)*0.05, f'IC50 = {fitted_ic50:.4f}', color='black', fontsize=12, weight='bold')
+            ax.text(fitted_ic50 * 1.3, (fitted_max + fitted_min)/2, f'IC50 = {fitted_ic50:.4f}', color='black', fontsize=12, weight='bold')
 
             # E. 調整軸標籤
             ax.set_xscale('log')
